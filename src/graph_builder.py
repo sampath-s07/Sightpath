@@ -10,9 +10,18 @@ import os
 import pickle
 import numpy as np
 import networkx as nx
-import osmnx as ox
 
 from config import DATA_DIR, OSM_TIMEOUT
+
+
+class _SafeUnpickler(pickle.Unpickler):
+    """Safely unpickle graphs without requiring pyproj DLLs."""
+    def find_class(self, module, name):
+        if module.startswith("pyproj"):
+            class _DummyCRS:
+                def __repr__(self): return "EPSG:32644"
+            return _DummyCRS
+        return super().find_class(module, name)
 
 
 OSM_LOCAL_FILE = os.path.join(DATA_DIR, "chennai.osm")
@@ -60,7 +69,7 @@ def get_graph() -> nx.MultiDiGraph:
     if os.path.exists(CACHE_FILE):
         print(f"[graph_builder] Loading cached graph ...")
         with open(CACHE_FILE, "rb") as f:
-            G = pickle.load(f)
+            G = _SafeUnpickler(f).load()
         print(f"[graph_builder] Graph loaded — nodes: {G.number_of_nodes()}, edges: {G.number_of_edges()}")
         return G
 
@@ -70,10 +79,16 @@ def get_graph() -> nx.MultiDiGraph:
         )
 
     print(f"[graph_builder] Parsing {OSM_LOCAL_FILE} ...")
+    import osmnx as ox
     ox.settings.timeout = OSM_TIMEOUT
     G = ox.graph_from_xml(OSM_LOCAL_FILE, retain_all=False)
     G = ox.project_graph(G)   # project to UTM (meters)
     G = clean_graph(G)
+
+    # Convert any pyproj / complex objects in graph metadata to plain strings
+    for k, v in list(G.graph.items()):
+        if "pyproj" in str(type(v)):
+            G.graph[k] = str(v)
 
     print(f"[graph_builder] Cleaned real OSM graph — nodes: {G.number_of_nodes()}, edges: {G.number_of_edges()}")
 
