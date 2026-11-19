@@ -164,32 +164,32 @@ st.markdown("---")
 
 # ── load / cache graph ────────────────────────────────────────────────────────
 
-@st.cache_resource(show_spinner=False, max_entries=3)
-def load_scored_graph(seed_: int):
+@st.cache_resource(show_spinner=False)
+def load_base_graph():
+    """Load + clean OSM graph. Cached once — never re-runs."""
     try:
         G = get_graph()
-        G = score_graph(G, seed=seed_)
+        G = score_graph(G, seed=42)   # fixed seed for base feature scoring
         G = normalise_graph_weights(G)
         return G, None
     except Exception as e:
         return None, str(e)
 
 
-@st.cache_resource(show_spinner=False, max_entries=3)
-def load_ml_scored_graph(seed_: int):
-    """Load graph, score it, train/load ML models, apply ML scores — all cached."""
+@st.cache_resource(show_spinner=False)
+def load_ml_graph():
+    """ML-scored graph — cached once at startup, never re-runs on slider change."""
     import copy
     try:
-        G, err = load_scored_graph(seed_)
+        G, err = load_base_graph()
         if err or G is None:
             return None, None, str(err)
-
         safety_model, access_model = load_models()
         if safety_model is None:
             safety_model, access_model, metrics = train_models(G, verbose=False)
         else:
-            metrics = {"note": "Loaded from disk", "safety_mae": "N/A", "safety_r2": "N/A", "access_mae": "N/A"}
-
+            metrics = {"safety_mae": "N/A", "safety_r2": "N/A", "access_mae": "N/A",
+                       "note": "loaded from disk"}
         G_ml = copy.deepcopy(G)
         G_ml = apply_ml_scores(G_ml, safety_model, access_model)
         return G_ml, metrics, None
@@ -199,7 +199,7 @@ def load_ml_scored_graph(seed_: int):
 
 with st.spinner("Loading Chennai road network from OpenStreetMap data ..."):
     try:
-        G, err = load_scored_graph(seed)
+        G, err = load_base_graph()
         if err:
             st.error(f"Failed to load graph: {err}")
             st.stop()
@@ -208,23 +208,19 @@ with st.spinner("Loading Chennai road network from OpenStreetMap data ..."):
         st.error(f"Failed to load graph: {e}")
         st.stop()
 
-# Apply ML scoring if enabled — fully cached, no re-training on reload
+# Apply ML scoring if enabled — fully cached, independent of all sliders
 G_active = G
 if use_ml_scoring:
-    with st.spinner("🤖 Loading ML safety model..."):
-        try:
-            G_ml, ml_metrics, ml_err = load_ml_scored_graph(seed)
-            if ml_err:
-                st.warning(f"ML model error: {ml_err} — using rule-based scores.")
-            elif G_ml is not None:
-                G_active = G_ml
-                st.info(
-                    f"🤖 ML Safety Model active (Random Forest) — "
-                    f"Safety MAE: {ml_metrics.get('safety_mae', 'N/A')} | "
-                    f"R²: {ml_metrics.get('safety_r2', 'N/A')}"
-                )
-        except Exception as e:
-            st.warning(f"ML model error: {e} — using rule-based scores.")
+    G_ml, ml_metrics, ml_err = load_ml_graph()
+    if ml_err:
+        st.warning(f"ML model unavailable: {ml_err} — using rule-based scores.")
+    elif G_ml is not None:
+        G_active = G_ml
+        st.info(
+            f"🤖 ML Safety Model active (Random Forest) — "
+            f"Safety MAE: {ml_metrics.get('safety_mae', 'N/A')} | "
+            f"R²: {ml_metrics.get('safety_r2', 'N/A')}"
+        )
 
 
 # ── preference learner state ──────────────────────────────────────────────────
