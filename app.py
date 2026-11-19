@@ -175,20 +175,26 @@ def load_scored_graph(seed_: int):
         return None, str(e)
 
 
-@st.cache_resource(show_spinner=False, max_entries=1)
-def get_ml_models(seed_: int):
-    """Train or load ML safety models."""
+@st.cache_resource(show_spinner=False, max_entries=3)
+def load_ml_scored_graph(seed_: int):
+    """Load graph, score it, train/load ML models, apply ML scores — all cached."""
+    import copy
     try:
+        G, err = load_scored_graph(seed_)
+        if err or G is None:
+            return None, None, str(err)
+
         safety_model, access_model = load_models()
         if safety_model is None:
-            G, _ = load_scored_graph(seed_)
-            if G is None:
-                return None, None, None
             safety_model, access_model, metrics = train_models(G, verbose=False)
-            return safety_model, access_model, metrics
-        return safety_model, access_model, {"note": "Loaded from cache"}
+        else:
+            metrics = {"note": "Loaded from disk", "safety_mae": "N/A", "safety_r2": "N/A", "access_mae": "N/A"}
+
+        G_ml = copy.deepcopy(G)
+        G_ml = apply_ml_scores(G_ml, safety_model, access_model)
+        return G_ml, metrics, None
     except Exception as e:
-        return None, None, {"error": str(e)}
+        return None, None, str(e)
 
 
 with st.spinner("Loading Chennai road network from OpenStreetMap data ..."):
@@ -202,26 +208,21 @@ with st.spinner("Loading Chennai road network from OpenStreetMap data ..."):
         st.error(f"Failed to load graph: {e}")
         st.stop()
 
-# Apply ML scoring if enabled
-G_active = G  # reference may be replaced by ML-scored copy
+# Apply ML scoring if enabled — fully cached, no re-training on reload
+G_active = G
 if use_ml_scoring:
-    with st.spinner("🤖 Training / loading ML safety model (Random Forest)..."):
+    with st.spinner("🤖 Loading ML safety model..."):
         try:
-            safety_model, access_model, ml_metrics = get_ml_models(seed)
-            if safety_model is not None:
-                import copy
-                G_active = copy.deepcopy(G)
-                G_active = apply_ml_scores(G_active, safety_model, access_model)
-                ml_note = "error" in (ml_metrics or {}) and ml_metrics["error"] or ""
-                if not ml_note:
-                    st.info(
-                        f"🤖 ML Safety Model active — "
-                        f"Safety MAE: {ml_metrics.get('safety_mae', 'N/A')} | "
-                        f"Accessibility MAE: {ml_metrics.get('access_mae', 'N/A')} | "
-                        f"R²: {ml_metrics.get('safety_r2', 'N/A')}"
-                    )
-            else:
-                st.warning("ML model unavailable — using rule-based scores.")
+            G_ml, ml_metrics, ml_err = load_ml_scored_graph(seed)
+            if ml_err:
+                st.warning(f"ML model error: {ml_err} — using rule-based scores.")
+            elif G_ml is not None:
+                G_active = G_ml
+                st.info(
+                    f"🤖 ML Safety Model active (Random Forest) — "
+                    f"Safety MAE: {ml_metrics.get('safety_mae', 'N/A')} | "
+                    f"R²: {ml_metrics.get('safety_r2', 'N/A')}"
+                )
         except Exception as e:
             st.warning(f"ML model error: {e} — using rule-based scores.")
 
